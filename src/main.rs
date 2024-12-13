@@ -96,7 +96,10 @@ fn main() {
     };
     std::env::set_current_dir(&project_path).expect("Failed to set current directory");
 
-    let mut writer = HookWriter::new(0x100000, std::fs::read("original/code.bin").unwrap());
+    let mut writer = HookWriter::new(
+        0x100000,
+        std::fs::read("original/code.bin").expect("Failed to read original/code.bin"),
+    );
 
     let job_env = std::sync::Arc::from(JobEnv {
         cwd: project_path.clone(),
@@ -126,7 +129,7 @@ fn main() {
     });
 
     let mut exheader: Exheader = std::fs::File::open("original/exheader.bin")
-        .expect("Opening exheader failed")
+        .expect("Opening original/exheader.bin failed")
         .read_ne()
         .expect("Reading exheader failed");
 
@@ -147,74 +150,77 @@ fn main() {
 
     print_step(1, "Compiling...");
 
-    let pb_root = indicatif::MultiProgress::new();
+    if todo_jobs.len() > 0 {
+        let pb_root = indicatif::MultiProgress::new();
 
-    let pb = indicatif::ProgressBar::new(todo_jobs.len() as u64);
-    pb.set_style(
-        indicatif::ProgressStyle::with_template(
-            "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})",
-        )
-        .expect("Progress style template should be valid")
-        .progress_chars("=>."),
-    );
-    pb_root.add(pb.clone());
+        let pb = indicatif::ProgressBar::new(todo_jobs.len() as u64);
+        pb.set_style(
+            indicatif::ProgressStyle::with_template(
+                "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})",
+            )
+            .expect("Progress style template should be valid")
+            .progress_chars("=>."),
+        );
+        pb_root.add(pb.clone());
 
-    pb.inc(0);
+        pb.inc(0);
 
-    let spinner_style = indicatif::style::ProgressStyle::default_spinner()
-        .template("{spinner:.green} {msg}")
-        .expect("Progress style template should be valid");
+        let spinner_style = indicatif::style::ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .expect("Progress style template should be valid");
 
-    let num_workers = num_cpus::get();
-    let spinners = (0..num_workers)
-        .map(|_| {
-            let pb = pb_root.add(indicatif::ProgressBar::new_spinner());
-            pb.set_style(spinner_style.clone());
-            pb.set_message(format!("waiting..."));
-            pb
-        })
-        .collect::<Vec<_>>();
+        let num_workers = std::cmp::min(num_cpus::get(), todo_jobs.len());
+        let spinners = (0..num_workers)
+            .map(|_| {
+                let pb = pb_root.add(indicatif::ProgressBar::new_spinner());
+                pb.set_style(spinner_style.clone());
+                pb.set_message(format!("waiting..."));
+                pb
+            })
+            .collect::<Vec<_>>();
 
-    let mut pool = WorkerPool::new(num_workers);
+        let mut pool = WorkerPool::new(num_workers);
 
-    for job in todo_jobs {
-        // a bit wasteful to clone these, but oh well
-        let pb = pb.clone();
-        let spinners = spinners.clone();
-        let job = job.clone();
-        let job_env = job_env.clone();
+        for job in todo_jobs {
+            // a bit wasteful to clone these, but oh well
+            let pb = pb.clone();
+            let spinners = spinners.clone();
+            let job = job.clone();
+            let job_env = job_env.clone();
 
-        pool.submit_task(move |thread_idx| {
-            let spinner = &spinners[thread_idx];
-            spinner.enable_steady_tick(std::time::Duration::from_millis(100));
-            spinner.set_message(job.src_path.display().to_string());
+            pool.submit_task(move |thread_idx| {
+                let spinner = &spinners[thread_idx];
+                spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+                spinner.set_message(job.src_path.display().to_string());
 
-            match job_env.execute_job(&job) {
-                Ok(_) => {
-                    pb.inc(1);
-                    TaskResult::Ok
+                match job_env.execute_job(&job) {
+                    Ok(_) => {
+                        pb.inc(1);
+                        TaskResult::Ok
+                    }
+                    Err(e) => {
+                        pb.println(e.to_string());
+                        TaskResult::Terminate
+                    }
                 }
-                Err(e) => {
-                    pb.println(e.to_string());
-                    TaskResult::Terminate
-                }
-            }
-        });
-    }
+            });
+        }
 
-    if pool.wait() == TaskResult::Terminate {
-        fatal_error("Compilation failed");
-    }
+        if pool.wait() == TaskResult::Terminate {
+            fatal_error("Compilation failed");
+        }
 
-    pb.finish_and_clear();
-    for spinner in spinners {
-        spinner.finish_and_clear();
+        pb.finish_and_clear();
+        for spinner in spinners {
+            spinner.finish_and_clear();
+        }
+        pb_root.clear().ok();
     }
-    pb_root.clear().ok();
 
     print_step(2, "Section hooks...");
 
-    let mut linker_file = std::fs::File::create("build/linker.ld").unwrap();
+    let mut linker_file =
+        std::fs::File::create("build/linker.ld").expect("Failed to create build/linker.ld");
     linker_file
         .write("SECTIONS\n{\n    /* Hook Generated Sections */\n".as_bytes())
         .unwrap();
@@ -224,8 +230,9 @@ fn main() {
     for job in &jobs {
         obj_paths.push(&job.obj_path);
 
-        let elf_data = std::fs::read(&job.obj_path).unwrap();
-        let elf_file = object::File::parse(elf_data.as_slice()).unwrap();
+        let elf_data = std::fs::read(&job.obj_path).expect("Failed to read object file");
+        let elf_file =
+            object::File::parse(elf_data.as_slice()).expect("Failed to parse object file");
 
         for section in elf_file.sections() {
             let Ok(name) = section.name() else {
@@ -313,8 +320,8 @@ fn main() {
         }
     }
 
-    let elf_data = std::fs::read("build/out.elf").unwrap();
-    let elf_file = object::File::parse(elf_data.as_slice()).unwrap();
+    let elf_data = std::fs::read("build/out.elf").expect("Failed to read build/out.elf");
+    let elf_file = object::File::parse(elf_data.as_slice()).expect("Failed to parse build/out.elf");
 
     let mut loader_text_section = None;
     let mut custom_text_section = None;
@@ -360,7 +367,9 @@ fn main() {
     let mut pre_post_entries: HashMap<u32, PrePostEntry> = HashMap::new();
     let mut text_end_symbol = None;
 
-    let symtab = elf_file.symbol_table().unwrap();
+    let symtab = elf_file
+        .symbol_table()
+        .expect("Failed to read symbol table");
     let mut symtab_index: HashMap<String, u32> = HashMap::new();
 
     for sym in symtab.symbols() {
@@ -444,159 +453,162 @@ fn main() {
         }
     }
 
-    for e in std::fs::read_dir("hooks").unwrap() {
-        let Ok(e) = e else {
-            continue;
-        };
-
-        let Ok(ft) = e.file_type() else {
-            continue;
-        };
-
-        if !ft.is_file() {
-            continue;
-        }
-
-        if e.path().extension() != Some(std::ffi::OsStr::new("hks")) {
-            continue;
-        }
-
-        for h in hook::hks::open_file(e.path()).unwrap() {
-            let Ok(mut h) = h else {
-                fatal_error!("Failed to parse hook file");
+    if let Ok(hook_dir_read) = std::fs::read_dir("hooks") {
+        for e in hook_dir_read {
+            let Ok(e) = e else {
+                continue;
             };
 
-            macro_rules! hks_hook_error {
-                ($($arg:tt)*) => {
-                    hook_error!(HookLocation { file: e.path(), line: h.line() as u32 }, $($arg)*)
-                }
+            let Ok(ft) = e.file_type() else {
+                continue;
+            };
+
+            if !ft.is_file() {
+                continue;
             }
 
-            let address = h.get_address("addr").unwrap();
+            if e.path().extension() != Some(std::ffi::OsStr::new("hks")) {
+                continue;
+            }
 
-            match h.get("type").unwrap().as_str() {
-                "branch" => {
-                    let link = h.get_bool("link").unwrap();
+            for h in hook::hks::open_file(e.path()).unwrap() {
+                let Ok(mut h) = h else {
+                    fatal_error!("Failed to parse hook file");
+                };
 
-                    let to_address = if h.has("func") {
-                        let sym = h.get("func").unwrap();
-                        *symtab_index.get(sym.as_str()).unwrap_or_else(|| {
-                            hks_hook_error!("Symbol \"{}\" not found", sym);
-                        })
-                    } else {
-                        h.get_address("dest").unwrap()
-                    };
+                macro_rules! hks_hook_error {
+                    ($($arg:tt)*) => {
+                        hook_error!(HookLocation { file: e.path(), line: h.line() as u32 }, $($arg)*)
+                    }
+                }
 
-                    writer
-                        .write(
-                            address,
-                            hook::arm::make_branch_u32(
-                                link,
+                let address = h.get_address("addr").unwrap();
+
+                match h.get("type").unwrap().as_str() {
+                    "branch" => {
+                        let link = h.get_bool("link").unwrap();
+
+                        let to_address = if h.has("func") {
+                            let sym = h.get("func").unwrap();
+                            *symtab_index.get(sym.as_str()).unwrap_or_else(|| {
+                                hks_hook_error!("Symbol \"{}\" not found", sym);
+                            })
+                        } else {
+                            h.get_address("dest").unwrap()
+                        };
+
+                        writer
+                            .write(
                                 address,
-                                to_address,
-                                hook::arm::ArmCondition::AL,
+                                hook::arm::make_branch_u32(
+                                    link,
+                                    address,
+                                    to_address,
+                                    hook::arm::ArmCondition::AL,
+                                )
+                                .unwrap()
+                                .to_le_bytes(),
                             )
-                            .unwrap()
-                            .to_le_bytes(),
-                        )
-                        .unwrap();
-                }
-                "softbranch" | "soft_branch" => {
-                    let opcode_pos = h.get("opcode").unwrap();
-
-                    let to_address = if h.has("func") {
-                        let sym = h.get("func").unwrap();
-                        *symtab_index.get(sym.as_str()).unwrap_or_else(|| {
-                            hks_hook_error!("Symbol \"{}\" not found", sym);
-                        })
-                    } else {
-                        h.get_address("dest").unwrap()
-                    };
-
-                    let extra_pos = if to_address < custom_text_address {
-                        HookExtraPos::Loader
-                    } else {
-                        HookExtraPos::Tail
-                    };
-
-                    let entry = pre_post_entries
-                        .entry(address)
-                        .or_insert_with(|| PrePostEntry {
-                            pre: Vec::new(),
-                            post: Vec::new(),
-                            extra_pos: extra_pos,
-                        });
-
-                    if extra_pos != entry.extra_pos {
-                        hks_hook_error!(
-                            "Pre/post hooks for 0x{:x} are in different sections",
-                            address,
-                        );
+                            .unwrap();
                     }
+                    "softbranch" | "soft_branch" => {
+                        let opcode_pos = h.get("opcode").unwrap();
 
-                    let a = (
-                        to_address,
-                        HookLocation {
-                            file: e.path(),
-                            line: h.line() as u32,
-                        },
-                    );
+                        let to_address = if h.has("func") {
+                            let sym = h.get("func").unwrap();
+                            *symtab_index.get(sym.as_str()).unwrap_or_else(|| {
+                                hks_hook_error!("Symbol \"{}\" not found", sym);
+                            })
+                        } else {
+                            h.get_address("dest").unwrap()
+                        };
 
-                    match opcode_pos.as_str() {
-                        "pre" => entry.post.push(a),
-                        "post" => entry.pre.push(a),
-                        _ => {
-                            hks_hook_error!("Invalid opcode position \"{}\"", opcode_pos);
-                        }
-                    }
-                }
-                "patch" => {
-                    let data_str = h.get("data").unwrap().replace(" ", "");
+                        let extra_pos = if to_address < custom_text_address {
+                            HookExtraPos::Loader
+                        } else {
+                            HookExtraPos::Tail
+                        };
 
-                    let data_chars = data_str.chars().collect::<Vec<_>>();
+                        let entry =
+                            pre_post_entries
+                                .entry(address)
+                                .or_insert_with(|| PrePostEntry {
+                                    pre: Vec::new(),
+                                    post: Vec::new(),
+                                    extra_pos: extra_pos,
+                                });
 
-                    if data_chars.len() % 2 != 0 {
-                        hks_hook_error!(
-                            "Invalid patch data \"{}\": Must be multiple of 2 hex character",
-                            data_str
-                        );
-                    }
-
-                    for (i, c) in data_chars.iter().enumerate() {
-                        if !c.is_ascii_hexdigit() {
+                        if extra_pos != entry.extra_pos {
                             hks_hook_error!(
-                                "Invalid patch data \"{}\": Invalid hex character at index {}",
-                                data_str,
-                                i
+                                "Pre/post hooks for 0x{:x} are in different sections",
+                                address,
                             );
                         }
+
+                        let a = (
+                            to_address,
+                            HookLocation {
+                                file: e.path(),
+                                line: h.line() as u32,
+                            },
+                        );
+
+                        match opcode_pos.as_str() {
+                            "pre" => entry.post.push(a),
+                            "post" => entry.pre.push(a),
+                            _ => {
+                                hks_hook_error!("Invalid opcode position \"{}\"", opcode_pos);
+                            }
+                        }
                     }
+                    "patch" => {
+                        let data_str = h.get("data").unwrap().replace(" ", "");
 
-                    let data = data_chars
-                        .chunks_exact(2)
-                        .map(|c| u8::from_str_radix(&c.iter().collect::<String>(), 16).unwrap())
-                        .collect::<Vec<_>>();
+                        let data_chars = data_str.chars().collect::<Vec<_>>();
 
-                    writer.write(address, data).unwrap();
+                        if data_chars.len() % 2 != 0 {
+                            hks_hook_error!(
+                                "Invalid patch data \"{}\": Must be multiple of 2 hex character",
+                                data_str
+                            );
+                        }
+
+                        for (i, c) in data_chars.iter().enumerate() {
+                            if !c.is_ascii_hexdigit() {
+                                hks_hook_error!(
+                                    "Invalid patch data \"{}\": Invalid hex character at index {}",
+                                    data_str,
+                                    i
+                                );
+                            }
+                        }
+
+                        let data = data_chars
+                            .chunks_exact(2)
+                            .map(|c| u8::from_str_radix(&c.iter().collect::<String>(), 16).unwrap())
+                            .collect::<Vec<_>>();
+
+                        writer.write(address, data).unwrap();
+                    }
+                    "symbol" | "symptr" | "sym_ptr" => {
+                        let sym = h.get("sym").unwrap();
+                        let sym_addr = symtab_index.get(sym.as_str()).unwrap_or_else(|| {
+                            hks_hook_error!("Symbol \"{}\" not found", sym);
+                        });
+
+                        writer.write(address, sym_addr.to_le_bytes()).unwrap();
+                    }
+                    t => {
+                        hks_hook_error!("Invalid hook type \"{}\"", t)
+                    }
                 }
-                "symbol" | "symptr" | "sym_ptr" => {
-                    let sym = h.get("sym").unwrap();
-                    let sym_addr = symtab_index.get(sym.as_str()).unwrap_or_else(|| {
-                        hks_hook_error!("Symbol \"{}\" not found", sym);
-                    });
 
-                    writer.write(address, sym_addr.to_le_bytes()).unwrap();
+                if !h.is_done() {
+                    hks_hook_error!(
+                        "Unused keys: \"{}\"",
+                        h.remaining_keys().collect::<Vec<_>>().join("\", \"")
+                    );
                 }
-                t => {
-                    hks_hook_error!("Invalid hook type \"{}\"", t)
-                }
-            }
-
-            if !h.is_done() {
-                hks_hook_error!(
-                    "Unused keys: \"{}\"",
-                    h.remaining_keys().collect::<Vec<_>>().join("\", \"")
-                );
             }
         }
     }
@@ -624,7 +636,8 @@ fn main() {
             writer.write(loader_address, data).unwrap();
         }
         None => {
-            fatal_error!("Loader text section not found");
+            println!("{}", console::style("Loader:").bold());
+            println!("  no loader section found");
         }
     }
 
@@ -767,7 +780,7 @@ fn main() {
             .unwrap();
     }
 
-    std::fs::write("build/code.bin", writer.data()).unwrap();
+    std::fs::write("build/code.bin", writer.data()).expect("Failed to write build/code.bin");
 
     exheader.info.sci.text_section.size =
         exheader.info.sci.text_section.num_pages * exheader::PAGE_SIZE;
@@ -781,7 +794,7 @@ fn main() {
         .create(true)
         .write(true)
         .open("build/exheader.bin")
-        .unwrap()
+        .expect("Failed to create build/exheader.bin")
         .write_ne(&exheader)
         .unwrap();
 
