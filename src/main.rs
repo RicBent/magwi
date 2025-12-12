@@ -59,7 +59,7 @@ impl std::fmt::Display for BuildError {
                         .lines()
                         .nth(location.line as usize - 1)
                     {
-                        write!(f, "    {} | {}", location.line, error_line)?;
+                        write!(f, "\n    {} | {}", location.line, error_line)?;
                     }
                 }
 
@@ -207,8 +207,11 @@ fn run() -> std::result::Result<(), BuildError> {
                 spinner.set_message(job.src_path.display().to_string());
 
                 match job_env.execute_job(&job) {
-                    Ok(_) => {
+                    Ok(log) => {
                         pb.inc(1);
+                        if !log.is_empty() {
+                            pb.println(log);
+                        }
                         TaskResult::Ok
                     }
                     Err(e) => {
@@ -365,17 +368,21 @@ fn run() -> std::result::Result<(), BuildError> {
             continue;
         }
 
-        // No need for a full parse here. Emitting the section is only possible if the hook is valid.
-        if !name.starts_with(HookInfo::SECTION_PREFIX) {
+        let Ok(hi) = hook::HookInfo::from_section_str(name) else {
+            // errors are handled in first pass, also skips non-hook sections
             continue;
-        }
+        };
 
         let address = section.address() as u32;
         let data = section
             .data()
-            .fatal("Failed to read section data for hook section")?;
+            .map_err(|e| {
+                BuildError::Hook(hi.location.clone(), format!("Failed to read section data: {}", e))
+            })?;
 
-        writer.write(address, data).fatal("Failed to write hook section data")?;
+        writer.write(address, data).map_err(|e| {
+            BuildError::Hook(hi.location.clone(), e.to_string())
+        })?;
     }
 
     print_step(4, "Symbol hooks...");
@@ -415,12 +422,14 @@ fn run() -> std::result::Result<(), BuildError> {
                         .to_u32(to_addr)
                         .ok_or_else(|| 
                             BuildError::Hook(
-                                hi.location,
+                                hi.location.clone(),
                                 format!("Branch destination 0x{:x} is out of range from 0x{:x}", branch.from_addr, to_addr),
                             )
                         )?
                         .to_le_bytes();
-                    writer.write(branch.from_addr, data).fatal("Failed to write branch hook")?;
+                    writer.write(branch.from_addr, data).map_err(|e| {
+                        BuildError::Hook(hi.location.clone(), e.to_string())
+                    })?;
                 }
                 HookKind::Pre(from_addr) | HookKind::Post(from_addr) => {
                     let extra_pos = if from_addr < custom_text_address {
@@ -453,7 +462,9 @@ fn run() -> std::result::Result<(), BuildError> {
                     }
                 }
                 HookKind::Symptr(patch_addr) => {
-                    writer.write(patch_addr, address.to_le_bytes()).fatal("Failed to write symptr hook")?;
+                    writer.write(patch_addr, address.to_le_bytes()).map_err(|e| {
+                        BuildError::Hook(hi.location.clone(), e.to_string())
+                    })?;
                 }
                 _ => {
                     return Err(BuildError::Hook(hi.location, "Invalid hook kind for symbol hook".into()));

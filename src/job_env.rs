@@ -13,9 +13,9 @@ pub struct JobEnv<'a> {
 }
 
 impl JobEnv<'_> {
-        pub fn execute_job(&self, job: &Job) -> Result<(), std::io::Error> {
+        pub fn execute_job(&self, job: &Job) -> Result<String, std::io::Error> {
         if !job.build_required() {
-            return Ok(());
+            return Ok(String::new());
         }
 
         std::fs::create_dir_all(job.obj_path.parent().unwrap()).unwrap();
@@ -36,13 +36,15 @@ impl JobEnv<'_> {
             .arg(&job.obj_path)
             .output()?;
 
+        let output_string = String::from_utf8_lossy(&output.stderr);
+
         if !output.status.success() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                String::from_utf8_lossy(&output.stderr),
+                output_string,
             ));
         }
 
-        Ok(())
+        Ok(output_string.into_owned())
     }
 }
