@@ -502,9 +502,18 @@ fn run() -> std::result::Result<(), BuildError> {
                 continue;
             }
 
-            for h in hook::hks::open_file(e.path()).fatal("Failed to open hook file")? {
-                let Ok(mut h) = h else {
-                    return Err(BuildError::Fatal("Failed to parse hook file".into()));
+            for h in hook::hks::open_file(e.path()).map_err(|err| {
+                BuildError::Fatal(format!("Failed to open hook file: {}", err))
+            })? {
+                let mut h = match h {
+                    Ok(h) => h,
+                    Err(err) => {
+                        let hook_location = HookLocation {
+                            file: e.path(),
+                            line: err.line() as u32,
+                        };
+                        return Err(BuildError::Hook(hook_location, err.to_string()));
+                    }
                 };
 
                 let hook_location = HookLocation {
@@ -512,24 +521,35 @@ fn run() -> std::result::Result<(), BuildError> {
                     line: h.line() as u32,
                 };
 
-                let address = h.get_address("addr").fatal("Failed to get address for hook")?;
+                let address = h.get_address("addr").map_err(|_| {
+                    BuildError::Hook(hook_location.clone(), "Missing property \"addr\"".into())
+                })?;
 
-                match h.get("type").fatal("Failed to get type for hook")?.as_str() {
+                let hook_type = h.get("type").map_err(|_| {
+                    BuildError::Hook(hook_location.clone(), "Missing property \"type\"".into())
+                })?;
+                match hook_type.as_str() {
                     "branch" => {
-                        let link = h.get_bool("link").fatal("Failed to get link for hook")?;
+                        let link = h.get_bool("link").map_err(|_| {
+                            BuildError::Hook(hook_location.clone(), "Missing property \"link\" for branch hook".into())
+                        })?;
 
                         let to_address = if h.has("func") {
-                            let sym = h.get("func").fatal("Failed to get func for hook")?;
+                            let sym = h.get("func").map_err(|_| {
+                                BuildError::Hook(hook_location.clone(), "Missing property \"func\" for branch hook".into())
+                            })?;
                             *symtab_index
                                 .get(sym.as_str())
                                 .ok_or_else(|| {
                                     BuildError::Hook(
                                         hook_location.clone(),
-                                        format!("Symbol \"{}\" not found", sym),
+                                        format!("Symbol \"{}\" not found for branch destination", sym),
                                     )
                                 })?
                         } else {
-                            h.get_address("dest").fatal("Failed to get dest for hook")?
+                            h.get_address("dest").map_err(|_| {
+                                BuildError::Hook(hook_location.clone(), "Missing property \"func\" or \"dest\" for branch hook".into())
+                            })?
                         };
 
                         writer
@@ -541,24 +561,37 @@ fn run() -> std::result::Result<(), BuildError> {
                                     to_address,
                                     hook::arm::ArmCondition::AL,
                                 )
-                                .fatal("Failed to make branch hook")?
+                                .ok_or_else(|| {
+                                    BuildError::Hook(hook_location.clone(), format!(
+                                        "Branch destination 0x{:x} is out of range from 0x{:x}",
+                                        to_address, address
+                                    ))
+                                })?
                                 .to_le_bytes(),
                             )
-                            .fatal("Failed to write branch hook")?;
+                            .map_err(|e| {
+                                BuildError::Hook(hook_location.clone(), format!("Failed to write branch hook: {}", e))
+                            })?;
                     }
                     "softbranch" | "soft_branch" => {
-                        let opcode_pos = h.get("opcode").fatal("Failed to get opcode for hook")?;
+                        let opcode_pos = h.get("opcode").map_err(|_| {
+                            BuildError::Hook(hook_location.clone(), "Missing property \"opcode\" for softbranch hook".into())
+                        })?;
 
                         let to_address = if h.has("func") {
-                            let sym = h.get("func").fatal("Failed to get func for hook")?;
+                            let sym = h.get("func").map_err(|_| {
+                                BuildError::Hook(hook_location.clone(), "Missing property \"func\" for softbranch hook".into())
+                            })?;
                             *symtab_index.get(sym.as_str()).ok_or_else(|| {
                                 BuildError::Hook(
                                     hook_location.clone(),
-                                    format!("Symbol \"{}\" not found", sym),
+                                    format!("Symbol \"{}\" not found for softbranch destination", sym),
                                 )
                             })?
                         } else {
-                            h.get_address("dest").fatal("Failed to get dest for hook")?
+                            h.get_address("dest").map_err(|_| {
+                                BuildError::Hook(hook_location.clone(), "Missing property \"func\" or \"dest\" for softbranch hook".into())
+                            })?
                         };
 
                         let extra_pos = if to_address < custom_text_address {
@@ -603,7 +636,9 @@ fn run() -> std::result::Result<(), BuildError> {
                         }
                     }
                     "patch" => {
-                        let data_str = h.get("data").fatal("Failed to get data for patch hook")?.replace(" ", "");
+                        let data_str = h.get("data").map_err(|_| {
+                            BuildError::Hook(hook_location.clone(), "Missing property \"data\" for patch hook".into())
+                        })?.replace(" ", "");
 
                         let data_chars = data_str.chars().collect::<Vec<_>>();
 
@@ -628,18 +663,24 @@ fn run() -> std::result::Result<(), BuildError> {
                             .map(|c| u8::from_str_radix(&c.iter().collect::<String>(), 16).unwrap())
                             .collect::<Vec<_>>();
 
-                        writer.write(address, data).fatal("Failed to write patch data")?;
+                        writer.write(address, data).map_err(|e| {
+                            BuildError::Hook(hook_location.clone(), e.to_string())
+                        })?;
                     }
                     "symbol" | "symptr" | "sym_ptr" => {
-                        let sym = h.get("sym").fatal("Failed to get sym for hook")?;
+                        let sym = h.get("sym").map_err(|_| {
+                            BuildError::Hook(hook_location.clone(), "Missing property \"sym\" for symbol hook".into())
+                        })?;
                         let sym_addr = symtab_index.get(sym.as_str()).ok_or_else(|| {
                             BuildError::Hook(
                                 hook_location.clone(),
-                                format!("Symbol \"{}\" not found", sym),
+                                format!("Symbol \"{}\" not found for symbol hook", sym),
                             )
                         })?;
 
-                        writer.write(address, sym_addr.to_le_bytes()).fatal("Failed to write symbol hook")?;
+                        writer.write(address, sym_addr.to_le_bytes()).map_err(|e| {
+                            BuildError::Hook(hook_location.clone(), e.to_string())
+                        })?;
                     }
                     t => {
                         return Err(BuildError::Hook(
@@ -652,7 +693,7 @@ fn run() -> std::result::Result<(), BuildError> {
                 if !h.is_done() {
                     return Err(BuildError::Hook(
                         hook_location.clone(),
-                        format!("Unused keys: \"{}\"", h.remaining_keys().collect::<Vec<_>>().join("\", \"")),
+                        format!("Unused properties: \"{}\"", h.remaining_keys().collect::<Vec<_>>().join("\", \"")),
                     ));
                 }
             }

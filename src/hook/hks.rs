@@ -4,18 +4,34 @@ use std::path::Path;
 
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum HksError {
-    #[error("Invalid title line: {0}")]
-    InvalidTitleLine(String),
+    #[error("Invalid title")]
+    InvalidTitleLine(usize),
 
-    #[error("Invalid key-value line: {0}")]
-    InvalidKeyValueLine(String),
+    #[error("Invalid property syntax")]
+    InvalidKeyValueLine(usize),
 
-    #[error("Invalid key-value line - Empty key: {0}")]
-    EmptyKey(String),
+    #[error("Missing property key")]
+    EmptyKey(usize),
 
-    #[error("Invalid key-value line - Empty value: {0}")]
-    EmptyValue(String),
+    #[error("Missing property value")]
+    EmptyValue(usize),
+
+    #[error("Duplicate property key \"{1}\"")]
+    DuplicateKey(usize, String),
 }
+
+impl HksError {
+    pub fn line(&self) -> usize {
+        match self {
+            HksError::InvalidTitleLine(line)
+            | HksError::InvalidKeyValueLine(line)
+            | HksError::EmptyKey(line)
+            | HksError::EmptyValue(line)
+            | HksError::DuplicateKey(line, _) => *line,
+        }
+    }
+}
+
 
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum HksParseError {
@@ -133,7 +149,7 @@ where
                 let first_c = line.chars().next().expect("line is not empty");
 
                 if first_c.is_whitespace() {
-                    return Some(Err(HksError::InvalidTitleLine(line)));
+                    return Some(Err(HksError::InvalidTitleLine(self.line_i)));
                 }
 
                 if line.ends_with(':') {
@@ -173,17 +189,20 @@ where
             }
 
             let Some(split_i) = line.find(":") else {
-                return Some(Err(HksError::InvalidKeyValueLine(line)));
+                return Some(Err(HksError::InvalidKeyValueLine(self.line_i)));
             };
 
             let key = line[..split_i].trim().to_string().to_ascii_lowercase();
             let value = line[split_i + 1..].trim().to_string();
 
             if key.is_empty() {
-                return Some(Err(HksError::EmptyKey(line)));
+                return Some(Err(HksError::EmptyKey(self.line_i)));
             }
             if value.is_empty() {
-                return Some(Err(HksError::EmptyValue(line)));
+                return Some(Err(HksError::EmptyValue(self.line_i)));
+            }
+            if kv.contains_key(&key) {
+                return Some(Err(HksError::DuplicateKey(self.line_i, key)));
             }
 
             kv.insert(key, value);
