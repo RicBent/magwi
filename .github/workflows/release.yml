@@ -1,0 +1,70 @@
+name: Build & Release (magwi)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            bin: magwi
+
+          - name: windows-x86_64
+            os: windows-latest
+            bin: magwi.exe
+
+          - name: macos-x86_64
+            os: macos-13
+            bin: magwi
+
+          - name: macos-arm64
+            os: macos-14
+            bin: magwi
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Package binary
+        shell: bash
+        run: |
+          mkdir dist
+          cp target/release/${{ matrix.bin }} dist/
+          cd dist
+          zip magwi-${{ matrix.name }}.zip ${{ matrix.bin }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: magwi-${{ matrix.name }}
+          path: dist/*.zip
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*.zip
