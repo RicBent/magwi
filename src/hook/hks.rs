@@ -295,25 +295,25 @@ test3:
         let mut reader = HksReader::new(std::io::Cursor::new(" a: 1"));
         assert_eq!(
             reader.next().unwrap().unwrap_err(),
-            HksError::InvalidTitleLine(" a: 1".into())
+            HksError::InvalidTitleLine(0)
         );
 
         let mut reader = HksReader::new(std::io::Cursor::new("test:\n a\n"));
         assert_eq!(
             reader.next().unwrap().unwrap_err(),
-            HksError::InvalidKeyValueLine(" a".into())
+            HksError::InvalidKeyValueLine(1)
         );
 
         let mut reader = HksReader::new(std::io::Cursor::new("test:\n :a\n"));
         assert_eq!(
             reader.next().unwrap().unwrap_err(),
-            HksError::EmptyKey(" :a".into())
+            HksError::EmptyKey(1)
         );
 
         let mut reader = HksReader::new(std::io::Cursor::new("test:\n a:\n"));
         assert_eq!(
             reader.next().unwrap().unwrap_err(),
-            HksError::EmptyValue(" a:".into())
+            HksError::EmptyValue(1)
         );
     }
 }
