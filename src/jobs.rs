@@ -27,7 +27,7 @@ fn dep_requires_rebuild(
         for part in line.trim().split_ascii_whitespace() {
             let part = part.trim();
 
-            if part == "\\" || part.ends_with(":") {
+            if part == "\\" || part.ends_with(":") || part == "build/include/magwi.h" {
                 continue;
             }
 
