@@ -127,17 +127,20 @@ fn run() -> std::result::Result<(), BuildError> {
         },
         flags: enum_map! {
             JobKind::C   => vec![
+                "-include", "build/include/magwi.h",
                 "-iquote", "include", "-isystem", "include/sys", "-isystem", "include/sys/clib",
                 "-march=armv6k+fp", "-mtune=mpcore", "-mfloat-abi=hard", "-mtp=soft",
                 "-fdiagnostics-color", "-Wall", "-O3", "-mword-relocations", "-fshort-wchar", "-fomit-frame-pointer", "-ffunction-sections", "-nostdinc"
             ],
             JobKind::CPP => vec![
+                "-include", "build/include/magwi.h",
                 "-iquote", "include", "-isystem", "include/sys", "-isystem", "include/sys/clib",
                 "-march=armv6k+fp", "-mtune=mpcore", "-mfloat-abi=hard", "-mtp=soft",
                 "-fdiagnostics-color", "-Wall", "-O3", "-mword-relocations", "-fshort-wchar", "-fomit-frame-pointer", "-ffunction-sections", "-nostdinc",
                 "-fno-exceptions", "-fno-rtti"
             ],
             JobKind::ASM => vec![
+                "-include", "build/include/magwi.h",
                 "-iquote", "include", "-isystem", "include/sys", "-isystem", "include/sys/clib",
                 "-march=armv6k+fp", "-mtune=mpcore", "-mfloat-abi=hard", "-mtp=soft",
                 "-fdiagnostics-color", "-x", "assembler-with-cpp"
@@ -153,6 +156,9 @@ fn run() -> std::result::Result<(), BuildError> {
     let loader_address = calc_loader_address(&exheader);
     let loader_max_size = calc_loader_max_size(&exheader);
     let custom_text_address = calc_custom_text_address(&exheader);
+
+    std::fs::create_dir_all("build/include").fatal("Failed to create build/include directory")?;
+    std::fs::write("build/include/magwi.h", MAGWI_MACROS_HEADER).fatal("Failed to write build/include/magwi.h")?;
 
     let mut jobs = find_jobs("source", "build/obj", "build/dep", true).fatal("Failed to find jobs")?;
     jobs.iter_mut().for_each(|job| {
@@ -914,6 +920,8 @@ const LINKER_SCRIPT_SECTIONS: &str = r#"    {
         __mw_text_end = .;
     }
 "#;
+
+const MAGWI_MACROS_HEADER: &str = include_str!("../resources/include/magwi.h");
 
 fn main() {
     println!("{} v{}", APP_NAME, APP_VERSION);
