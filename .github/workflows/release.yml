@@ -23,11 +23,11 @@ jobs:
             bin: magwi.exe
 
           - name: macos-x86_64
-            os: macos-13
+            os: macos-15-intel
             bin: magwi
 
           - name: macos-arm64
-            os: macos-14
+            os: macos-latest
             bin: magwi
 
     steps:
@@ -39,10 +39,20 @@ jobs:
       - name: Build (release)
         run: cargo build --release
 
-      - name: Package binary
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist
+          Copy-Item target/release/${{ matrix.bin }} dist/
+          Compress-Archive -Path dist/${{ matrix.bin }} `
+            -DestinationPath magwi-${{ matrix.name }}.zip
+      
+      - name: Package binary (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          mkdir dist
+          mkdir -p dist
           cp target/release/${{ matrix.bin }} dist/
           cd dist
           zip magwi-${{ matrix.name }}.zip ${{ matrix.bin }}
