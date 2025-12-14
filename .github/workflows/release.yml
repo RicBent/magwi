@@ -45,9 +45,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist
           Copy-Item target/release/${{ matrix.bin }} dist/
-          Compress-Archive -Path dist/${{ matrix.bin }} `
-            -DestinationPath magwi-${{ matrix.name }}.zip
-      
+          Compress-Archive -Path dist/${{ matrix.bin }} -DestinationPath dist/magwi-${{ matrix.name }}.zip
+
       - name: Package binary (Unix)
         if: runner.os != 'Windows'
         shell: bash
