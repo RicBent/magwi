@@ -642,32 +642,55 @@ fn run() -> std::result::Result<(), BuildError> {
                         }
                     }
                     "patch" => {
-                        let data_str = h.get("data").map_err(|_| {
-                            BuildError::Hook(hook_location.clone(), "Missing property \"data\" for patch hook".into())
-                        })?.replace(" ", "");
+                        let data = if let Ok(data_str) = h.get("data") {
+                            let data_chars = data_str.replace(" ", "").chars().collect::<Vec<_>>();
 
-                        let data_chars = data_str.chars().collect::<Vec<_>>();
-
-                        if data_chars.len() % 2 != 0 {
-                            return Err(BuildError::Hook(
-                                hook_location.clone(),
-                                format!("Invalid patch data \"{}\": Must be multiple of 2 hex character", data_str),
-                            ));
-                        }
-
-                        for (i, c) in data_chars.iter().enumerate() {
-                            if !c.is_ascii_hexdigit() {
+                            if data_chars.len() % 2 != 0 {
                                 return Err(BuildError::Hook(
                                     hook_location.clone(),
-                                    format!("Invalid patch data \"{}\": Invalid hex character at index {}", data_str, i),
+                                    format!("Invalid patch data \"{}\": Must be multiple of 2 hex character", data_str),
                                 ));
                             }
-                        }
 
-                        let data = data_chars
-                            .chunks_exact(2)
-                            .map(|c| u8::from_str_radix(&c.iter().collect::<String>(), 16).unwrap())
-                            .collect::<Vec<_>>();
+                            for (i, c) in data_chars.iter().enumerate() {
+                                if !c.is_ascii_hexdigit() {
+                                    return Err(BuildError::Hook(
+                                        hook_location.clone(),
+                                        format!("Invalid patch data \"{}\": Invalid hex character at index {}", data_str, i),
+                                    ));
+                                }
+                            }
+
+                            data_chars
+                                .chunks_exact(2)
+                                .map(|c| u8::from_str_radix(&c.iter().collect::<String>(), 16).unwrap())
+                                .collect::<Vec<_>>()
+                        } else {
+                            let src_symbol = h.get("src").map_err(|_| {
+                                BuildError::Hook(hook_location.clone(), "Missing property \"data\" or \"src\" for patch hook".into())
+                            })?;
+
+                            let len = h.get_address("len").map_err(|_| {
+                                BuildError::Hook(hook_location.clone(), "Missing property \"len\" for patch hook with \"src\"".into())
+                            })?;
+
+                            let src_addr = *symtab_index.get(src_symbol.as_str()).ok_or_else(|| {
+                                BuildError::Hook(
+                                    hook_location.clone(),
+                                    format!("Symbol \"{}\" not found for patch source", src_symbol),
+                                )
+                            })? as u64;
+
+                            let segment = elf_file.segments().find(|seg| {
+                                let start = seg.address();
+                                let end = start + seg.size();
+                                src_addr >= start && src_addr < end
+                            }).fatal("Failed to find segment for patch source address")?;
+                            
+                            let offset = (src_addr - segment.address()) as usize;
+                            let segment_data = segment.data().fatal("Failed to read segment data for patch source")?;
+                            segment_data[offset..offset + (len as usize)].to_vec()
+                        };
 
                         writer.write(address, data).map_err(|e| {
                             BuildError::Hook(hook_location.clone(), e.to_string())
